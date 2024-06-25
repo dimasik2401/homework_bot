@@ -8,6 +8,8 @@ from dotenv import load_dotenv
 from telebot import TeleBot
 from telebot.apihelper import ApiException
 
+from exceptions import EnvironmentError
+
 load_dotenv()
 
 
@@ -41,7 +43,7 @@ def check_tokens():
     if check:
         message = f'Отсутствует переменная(ые) окружения: {", ".join(check)}'
         logging.critical(message)
-        raise AssertionError(message)
+        raise EnvironmentError(message)
 
 
 def send_message(bot, message):
@@ -71,14 +73,21 @@ def get_api_answer(timestamp):
         response = requests.get(**api_request_config)
     except requests.RequestException:
         raise ConnectionError(
-            'Ошибка при запросе к эндпоинту {url} с параметрами: {headers} и '
-            '{params}'.format(**api_request_config)
+            f'Ошибка при запросе к эндпоинту {api_request_config["url"]} '
+            f'с параметрами: {api_request_config["headers"]} и '
+            f'{api_request_config["params"]}'
         )
     if response.status_code != HTTPStatus.OK:
-        raise ConnectionError('Ошибка при запросе к эндпоинту {url} '
-                              'с параметрами: и {params}'.
-                              format(**api_request_config))
-    return response.json()
+        raise ConnectionError('Ошибка при запросе к '
+                              f'эндпоинту {api_request_config["url"]} '
+                              f'с параметрами: {api_request_config["params"]}')
+
+    try:
+        response_json = response.json()
+    except ValueError as e:
+        raise ValueError(f'Ошибка при преобразовании ответа в JSON: {e}')
+
+    return response_json
 
 
 def check_response(response):
@@ -98,17 +107,18 @@ def check_response(response):
 
 def parse_status(homework):
     """Извечение статус домашней работы."""
-    try:
-        homework_name = homework['homework_name']
-        status = homework['status']
-    except KeyError as error:
-        raise KeyError(f'В ответе API нет значения {error}')
+    homework_name = homework.get('homework_name')
+    status = homework.get('status')
+
+    if homework_name is None or status is None:
+        raise KeyError('Отсутствует ключ "homework_name" '
+                       'или "status" в объекте homework')
+
     if status not in HOMEWORK_VERDICTS:
-        raise ValueError(
-            f'Неверный статус домашней работы {homework["status"]}'
-        )
-    verdict = HOMEWORK_VERDICTS.get(status)
-    return f'Изменился статус проверки работы "{homework_name}". {verdict}'
+        raise ValueError(f'Неверный статус домашней работы: {status}')
+
+    return ('Изменился статус проверки '
+            f'работы "{homework_name}". {HOMEWORK_VERDICTS.get(status)}')
 
 
 def main():
@@ -118,7 +128,7 @@ def main():
     last_status = ''
     # Создаем объект класса бота
     bot = TeleBot(token=TELEGRAM_TOKEN)
-    timestamp = 1
+    timestamp = 0
 
     while True:
         try:
@@ -128,8 +138,7 @@ def main():
                 logging.debug('Получен пустой список домашних работ')
                 continue
             status_home_work = parse_status(homeworks[0])
-            if (status_home_work != last_status
-                    and send_message(bot, status_home_work)):
+            if send_message(bot, status_home_work):
                 last_status = status_home_work
                 timestamp = response.get('current_date', timestamp)
         except Exception as error:
